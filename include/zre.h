@@ -41,9 +41,11 @@
 #   error "Zyre needs CZMQ/1.4.0 or later"
 #endif
 
+#if 0
 #include <fmq.h>
 #if FMQ_VERSION < 10200
 #   error "Zyre needs FileMQ/1.2.0 or later"
+#endif
 #endif
 
 //  IANA-assigned port for ZRE discovery protocol
