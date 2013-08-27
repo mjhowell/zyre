@@ -27,6 +27,8 @@
 #include <czmq.h>
 #include "../include/zre_internal.h"
 
+#define NO_FMQ
+
 //  Optional global context for zre_node instances
 zctx_t *zre_global_ctx = NULL;
 //  Optional temp directory; set by caller if needed
@@ -267,13 +269,15 @@ typedef struct {
     zhash_t *peer_groups;       //  Groups that our peers are in
     zhash_t *own_groups;        //  Groups that we are in
     zhash_t *headers;           //  Our header values
-    
+
+#ifndef NO_FMQ
     fmq_server_t *fmq_server;   //  FileMQ server object
     int fmq_service;            //  FileMQ server port
     char fmq_outbox [255];      //  FileMQ server outbox
     
     fmq_client_t *fmq_client;   //  FileMQ client object
     char fmq_inbox [255];       //  FileMQ client inbox
+#endif
 } agent_t;
 
 static agent_t *
@@ -319,6 +323,7 @@ agent_new (zctx_t *ctx, void *pipe)
     sprintf (endpoint, "%s:%d", self->host, self->port);
     self->log = zre_log_new (endpoint);
 
+#ifndef NO_FMQ
     //  Set up content distribution network: Each server binds to an
     //  ephemeral port and publishes a temporary directory that acts
     //  as the outbox for this node.
@@ -341,6 +346,7 @@ agent_new (zctx_t *ctx, void *pipe)
     fmq_client_set_inbox (self->fmq_client, self->fmq_inbox);
     fmq_client_set_resync (self->fmq_client, true);
     fmq_client_subscribe (self->fmq_client, "/");
+#endif
     
     return self;
 }
@@ -352,6 +358,7 @@ agent_destroy (agent_t **self_p)
     if (*self_p) {
         agent_t *self = *self_p;
 
+#ifndef NO_FMQ
         //  Destroy inbox and outbox directories if they exist
         fmq_dir_t *inbox = fmq_dir_new (self->fmq_inbox, NULL);
         if (inbox) {
@@ -363,6 +370,7 @@ agent_destroy (agent_t **self_p)
             fmq_dir_remove (outbox, true);
             fmq_dir_destroy (&outbox);
         }
+#endif
         zhash_destroy (&self->peers);
         zhash_destroy (&self->peer_groups);
         zhash_destroy (&self->own_groups);
@@ -370,8 +378,10 @@ agent_destroy (agent_t **self_p)
         zbeacon_destroy (&self->beacon);
         zre_log_destroy (&self->log);
         
+#ifndef NO_FMQ
         fmq_server_destroy (&self->fmq_server);
         fmq_client_destroy (&self->fmq_client);
+#endif
         free (self->identity);
         free (self);
         *self_p = NULL;
@@ -471,6 +481,7 @@ agent_recv_from_api (agent_t *self)
         free (name);
         free (value);
     }
+#ifndef NO_FMQ
     else
     if (streq (command, "PUBLISH")) {
         char *logical = zmsg_popstr (request);
@@ -489,6 +500,7 @@ agent_recv_from_api (agent_t *self)
         free (logical);
         free (physical);
     }
+    
     else
     if (streq (command, "RETRACT")) {
         char *logical = zmsg_popstr (request);
@@ -502,6 +514,7 @@ agent_recv_from_api (agent_t *self)
         free (symlink);
         free (logical);
     }
+#endif
     free (command);
     zmsg_destroy (&request);
     return 0;
@@ -644,10 +657,12 @@ agent_recv_from_peer (agent_t *self)
         if (collector)
             zre_log_connect (self->log, collector);
         
+#ifndef NO_FMQ
         //  If peer is a FileMQ publisher, connect to it
         char *publisher = zre_msg_headers_string (msg, "X-FILEMQ", NULL);
         if (publisher)
             fmq_client_connect (self->fmq_client, publisher);
+#endif
     }
     else
     if (zre_msg_id (msg) == ZRE_MSG_WHISPER) {
@@ -724,6 +739,7 @@ agent_recv_beacon (agent_t *self)
 }
 
 
+#ifndef NO_FMQ
 //  Forward event from fmq_client to caller
 
 static int
@@ -735,7 +751,7 @@ agent_recv_fmq_event (agent_t *self)
     zmsg_send (&msg, self->pipe);
     return 0;
 }
-
+#endif
 
 //  Remove peer from group, if it's a member
 
@@ -793,8 +809,11 @@ zre_node_agent (void *args, zctx_t *ctx, void *pipe)
     zmq_pollitem_t pollitems [] = {
         { self->pipe, 0, ZMQ_POLLIN, 0 },
         { self->inbox, 0, ZMQ_POLLIN, 0 },
-        { zbeacon_socket (self->beacon), 0, ZMQ_POLLIN, 0 },
+        { zbeacon_socket (self->beacon), 0, ZMQ_POLLIN, 0 }
+#ifndef NO_FMQ
+        ,
         { fmq_client_handle (self->fmq_client), 0, ZMQ_POLLIN, 0 }
+#endif
     };
     
     uint64_t reap_at = zclock_time () + REAP_INTERVAL;
@@ -815,8 +834,10 @@ zre_node_agent (void *args, zctx_t *ctx, void *pipe)
         if (pollitems [2].revents & ZMQ_POLLIN)
             agent_recv_beacon (self);
 
+#ifndef NO_FMQ
         if (pollitems [3].revents & ZMQ_POLLIN)
             agent_recv_fmq_event (self);
+#endif
 
         if (zclock_time () >= reap_at) {
             reap_at = zclock_time () + REAP_INTERVAL;
